@@ -1,0 +1,341 @@
+homeassistant:
+  customize: !include customize.yaml
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# Template sensors
+template:
+  - sensor:
+      # Solar surplus: export power when not importing, else 0
+      - name: "Solar Surplus"
+        unique_id: solar_surplus_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set export = states('sensor.qpmtwtuj_export_power') | float(0) %}
+          {% set importing = states('sensor.qpmtwtuj_import_power') | float(0) %}
+          {% if importing > 0 %}
+            0
+          {% else %}
+            {{ export }}
+          {% endif %}
+
+      # Safe gauge wrappers for Livoltek sensors (handle "unknown" gracefully)
+      - name: "Battery SoC"
+        unique_id: battery_soc_safe
+        unit_of_measurement: "%"
+        device_class: battery
+        state_class: measurement
+        state: "{{ states('sensor.aidan_molloy_battery_soc') | float(0) }}"
+        availability: "{{ states('sensor.aidan_molloy_battery_soc') | is_number }}"
+
+      - name: "Solar Generation"
+        unique_id: solar_generation_safe
+        unit_of_measurement: "kW"
+        device_class: power
+        state_class: measurement
+        state: "{{ states('sensor.aidan_molloy_current_solar_generation') | float(0) }}"
+        availability: "{{ states('sensor.aidan_molloy_current_solar_generation') | is_number }}"
+
+      # Battery charge power (positive when charging, 0 otherwise) in kW
+      - name: "Battery Charge Power"
+        unique_id: battery_charge_power
+        unit_of_measurement: "kW"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set p = states('sensor.aidan_molloy_current_battery_power') | float(0) %}
+          {{ p if p > 0 else 0 }}
+
+      # Battery discharge power (positive when discharging, 0 otherwise) in kW
+      - name: "Battery Discharge Power"
+        unique_id: battery_discharge_power
+        unit_of_measurement: "kW"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set p = states('sensor.aidan_molloy_current_battery_power') | float(0) %}
+          {{ (p | abs) if p < 0 else 0 }}
+
+      # Current electricity import price based on Flogas DG2 Smart Day/Night/Peak tariff
+      # Rates include 9% VAT. Time windows: Night 23:00-08:00, Peak 17:00-19:00, Day otherwise
+      - name: "Electricity Import Price"
+        unique_id: electricity_import_price
+        unit_of_measurement: "EUR/kWh"
+        device_class: monetary
+        state: >
+          {% set hour = now().hour %}
+          {% if hour >= 23 or hour < 8 %}
+            0.2306
+          {% elif hour >= 17 and hour < 19 %}
+            0.3779
+          {% else %}
+            0.3194
+          {% endif %}
+
+      # Export price (fixed, 0% VAT)
+      - name: "Electricity Export Price"
+        unique_id: electricity_export_price
+        unit_of_measurement: "EUR/kWh"
+        device_class: monetary
+        state: "0.185"
+
+      # Current tariff band name (for utility meter tariff switching)
+      - name: "Current Tariff Band"
+        unique_id: current_tariff_band
+        state: >
+          {% set hour = now().hour %}
+          {% if hour >= 23 or hour < 8 %}
+            night
+          {% elif hour >= 17 and hour < 19 %}
+            peak
+          {% else %}
+            day
+          {% endif %}
+
+      # ESB meter grid import/export for Energy dashboard (cumulative, total_increasing)
+      - name: "ESB Grid Import Energy"
+        unique_id: esb_grid_import_energy
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        state: "{{ states('sensor.esb_grid_import_kwh') | float(0) | round(3) }}"
+        availability: "{{ states('sensor.esb_grid_import_kwh') not in ['unknown', 'unavailable'] }}"
+
+      - name: "ESB Grid Export Energy"
+        unique_id: esb_grid_export_energy
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        state: "{{ states('sensor.esb_grid_export_kwh') | float(0) | round(3) }}"
+        availability: "{{ states('sensor.esb_grid_export_kwh') not in ['unknown', 'unavailable'] }}"
+
+      # Battery charging from grid = inverter export - EV charging
+      - name: "Battery Grid Charge Power"
+        unique_id: battery_grid_charge_power
+        unit_of_measurement: "kW"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set export = states('sensor.qpmtwtuj_export_power') | float(0) %}
+          {% set ev = states('sensor.unicron_power') | float(0) %}
+          {{ [export - ev, 0] | max | round(3) }}
+
+      # Grid import cost rate (EUR/hr) = import power (kW) x price (EUR/kWh)
+      - name: "Grid Import Cost Rate"
+        unique_id: grid_import_cost_rate
+        unit_of_measurement: "EUR/h"
+        state_class: measurement
+        state: >
+          {% set import_kw = states('sensor.aidan_molloy_current_grid_import') | float(0) %}
+          {% set price = states('sensor.electricity_import_price') | float(0) %}
+          {% if import_kw > 0 %}
+            {{ (import_kw * price) | round(4) }}
+          {% else %}
+            0
+          {% endif %}
+
+      # Grid export earnings rate (EUR/hr)
+      - name: "Grid Export Earnings Rate"
+        unique_id: grid_export_earnings_rate
+        unit_of_measurement: "EUR/h"
+        state_class: measurement
+        state: >
+          {% set import_kw = states('sensor.aidan_molloy_current_grid_import') | float(0) %}
+          {% if import_kw < 0 %}
+            {{ (import_kw | abs * 0.185) | round(4) }}
+          {% else %}
+            0
+          {% endif %}
+
+# Riemann sum integrals
+sensor:
+  - platform: integration
+    source: sensor.battery_charge_power
+    name: "Battery Energy In"
+    unique_id: battery_energy_in
+    unit_prefix: ~
+    round: 2
+    method: left
+
+  - platform: integration
+    source: sensor.battery_discharge_power
+    name: "Battery Energy Out"
+    unique_id: battery_energy_out
+    unit_prefix: ~
+    round: 2
+    method: left
+
+  # Running cost accumulator (integrates EUR/h over time to get EUR)
+  - platform: integration
+    source: sensor.grid_import_cost_rate
+    name: "Grid Import Cost"
+    unique_id: grid_import_cost
+    unit_prefix: ~
+    round: 2
+    method: left
+
+  # Running export earnings accumulator
+  - platform: integration
+    source: sensor.grid_export_earnings_rate
+    name: "Grid Export Earnings"
+    unique_id: grid_export_earnings
+    unit_prefix: ~
+    round: 2
+    method: left
+
+# Utility meters â€” track energy and cost per day/week/month
+  # ESB Smart Meter via InfluxDB (Windows PC at YOUR_INFLUXDB_HOST)
+  - platform: influxdb
+    host: YOUR_INFLUXDB_HOST
+    port: 8086
+    ssl: false
+    verify_ssl: false
+    queries:
+      - name: ESB Meter Total kWh
+        unit_of_measurement: kWh
+        value_template: "{{ (value | float(0) * 0.5) | round(3) }}"
+        database: esb_smart_meter
+        measurement: meter_reading
+        field: value
+        group_function: sum
+        where: "\"MPRN\" = '10018858253'"
+
+      - name: ESB Grid Import kWh
+        unit_of_measurement: kWh
+        value_template: "{{ value | float(0) | round(3) }}"
+        database: esb_smart_meter
+        measurement: meter_reading
+        field: value
+        group_function: sum
+        where: "\"ReadType\" = 'Active Import Interval (kWh)'"
+
+      - name: ESB Grid Export kWh
+        unit_of_measurement: kWh
+        value_template: "{{ value | float(0) | round(3) }}"
+        database: esb_smart_meter
+        measurement: meter_reading
+        field: value
+        group_function: sum
+        where: "\"ReadType\" = 'Active Export Interval (kWh)'"
+
+
+
+
+utility_meter:
+  # Grid import energy
+  grid_import_daily:
+    source: sensor.aidan_molloy_grid_import_today
+    name: "Grid Import Daily"
+    cycle: daily
+    tariffs:
+      - day
+      - night
+      - peak
+  grid_import_weekly:
+    source: sensor.aidan_molloy_grid_import_today
+    name: "Grid Import Weekly"
+    cycle: weekly
+  grid_import_monthly:
+    source: sensor.aidan_molloy_grid_import_today
+    name: "Grid Import Monthly"
+    cycle: monthly
+
+  # Grid export energy
+  grid_export_daily:
+    source: sensor.aidan_molloy_grid_export_today
+    name: "Grid Export Daily"
+    cycle: daily
+  grid_export_weekly:
+    source: sensor.aidan_molloy_grid_export_today
+    name: "Grid Export Weekly"
+    cycle: weekly
+  grid_export_monthly:
+    source: sensor.aidan_molloy_grid_export_today
+    name: "Grid Export Monthly"
+    cycle: monthly
+
+  # Solar generation
+  solar_daily:
+    source: sensor.aidan_molloy_solar_generation_today
+    name: "Solar Daily"
+    cycle: daily
+  solar_weekly:
+    source: sensor.aidan_molloy_solar_generation_today
+    name: "Solar Weekly"
+    cycle: weekly
+  solar_monthly:
+    source: sensor.aidan_molloy_solar_generation_today
+    name: "Solar Monthly"
+    cycle: monthly
+
+  # Grid import cost (EUR)
+  grid_cost_daily:
+    source: sensor.grid_import_cost
+    name: "Grid Cost Daily"
+    cycle: daily
+    tariffs:
+      - day
+      - night
+      - peak
+  grid_cost_weekly:
+    source: sensor.grid_import_cost
+    name: "Grid Cost Weekly"
+    cycle: weekly
+  grid_cost_monthly:
+    source: sensor.grid_import_cost
+    name: "Grid Cost Monthly"
+    cycle: monthly
+
+  # Grid export earnings (EUR)
+  export_earnings_daily:
+    source: sensor.grid_export_earnings
+    name: "Export Earnings Daily"
+    cycle: daily
+  export_earnings_weekly:
+    source: sensor.grid_export_earnings
+    name: "Export Earnings Weekly"
+    cycle: weekly
+  export_earnings_monthly:
+    source: sensor.grid_export_earnings
+    name: "Export Earnings Monthly"
+    cycle: monthly
+
+# Night-rate time window helper
+input_datetime:
+  ev_charge_start:
+    name: "EV Night Charge Start"
+    has_date: false
+    has_time: true
+  ev_charge_end:
+    name: "EV Night Charge End"
+    has_date: false
+    has_time: true
+
+
+input_text:
+  gemini_summary:
+    name: "Gemini Energy Summary"
+    max: 255
+    initial: "No summary yet — runs at 7pm daily."
+
+# News headlines ticker (fetches RSS every 30 mins)
+command_line:
+  - sensor:
+      name: "News Headlines"
+      unique_id: news_headlines_ticker
+      command: "python3 /config/news_fetch.py"
+      scan_interval: 1800
+      value_template: "{{ value_json.state }}"
+      json_attributes:
+        - items

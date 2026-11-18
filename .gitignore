@@ -1,0 +1,12 @@
+.secrets
+esb_session.json
+esb_session.json.expired
+esb_run.log
+*.log
+__pycache__/
+*.pyc
+_files.json
+_sanitized_check.txt
+ha_*.yaml
+ha_*.json
+HDF_*.csv

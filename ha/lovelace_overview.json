@@ -1,0 +1,74 @@
+{
+  "title": "Overview",
+  "path": "overview",
+  "icon": "mdi:home",
+  "cards": [
+    {
+      "type": "markdown",
+      "title": "Energy Summary",
+      "content": "{{ states('input_text.gemini_summary') or '*No summary yet \u2014 runs at 7pm daily.*' }}"
+    },
+    {
+      "type": "history-graph",
+      "title": "Power (24h)",
+      "hours_to_show": 24,
+      "entities": [
+        {
+          "entity": "sensor.solar_generation",
+          "name": "Solar (kW)"
+        },
+        {
+          "entity": "sensor.aidan_molloy_current_load_consumption",
+          "name": "House Load (kW)"
+        },
+        {
+          "entity": "sensor.qpmtwtuj_import_power",
+          "name": "Grid Import (kW)"
+        },
+        {
+          "entity": "sensor.battery_grid_charge_power",
+          "name": "Battery Charging (kW)"
+        },
+        {
+          "entity": "sensor.unicron_power",
+          "name": "EV Charging (kW)"
+        }
+      ]
+    },
+    {
+      "type": "history-graph",
+      "title": "Battery SoC (24h)",
+      "hours_to_show": 24,
+      "entities": [
+        {
+          "entity": "sensor.battery_soc",
+          "name": "Battery %"
+        }
+      ]
+    },
+    {
+      "type": "vertical-stack",
+      "cards": [
+        {
+          "type": "markdown",
+          "content": "{% set night = states('sensor.grid_cost_daily_night') | float(0) %}{% set day   = states('sensor.grid_cost_daily_day')   | float(0) %}{% set peak  = states('sensor.grid_cost_daily_peak')  | float(0) %}{% set ed    = states('sensor.export_earnings_daily')   | float(0) %}{% set ew    = states('sensor.export_earnings_weekly')  | float(0) %}{% set em    = states('sensor.export_earnings_monthly') | float(0) %}{% set td    = night + day + peak %}{% set tw    = states('sensor.grid_cost_weekly')  | float(0) %}{% set tm    = states('sensor.grid_cost_monthly') | float(0) %}| | Cost | Export | Net |\n|---|---|---|---|\n| **Today** | \u20ac{{ td | round(2) }} | \u20ac{{ ed | round(2) }} | \u20ac{{ (td - ed) | round(2) }} |\n| **Week** | \u20ac{{ tw | round(2) }} | \u20ac{{ ew | round(2) }} | \u20ac{{ (tw - ew) | round(2) }} |\n| **Month** | \u20ac{{ tm | round(2) }} | \u20ac{{ em | round(2) }} | \u20ac{{ (tm - em) | round(2) }} |\n\n*Today: Night \u20ac{{ night | round(2) }} \u00b7 Day \u20ac{{ day | round(2) }} \u00b7 Peak \u20ac{{ peak | round(2) }}*"
+        },
+        {
+          "type": "history-graph",
+          "title": "Cost Rate (24h)",
+          "hours_to_show": 24,
+          "entities": [
+            {
+              "entity": "sensor.grid_import_cost_rate",
+              "name": "Spending (\u20ac/h)"
+            },
+            {
+              "entity": "sensor.electricity_import_price",
+              "name": "Tariff (\u20ac/kWh)"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,337 @@
+- id: ev_night_charging
+  alias: "EV Night-Band Charging (23:00-08:00)"
+  description: >
+    Enable the Easee charger during the night electricity rate window.
+    Disable it outside the window (unless solar surplus charging is active).
+  mode: single
+  triggers:
+    - trigger: time
+      at: "23:00:00"
+      id: night_start
+    - trigger: time
+      at: "08:00:00"
+      id: night_end
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: night_start
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: switch.unicron_charger_enabled
+            - action: notify.persistent_notification
+              data:
+                title: "EV Charging"
+                message: "Night-rate charging enabled (23:00-08:00)."
+        - conditions:
+            - condition: trigger
+              id: night_end
+          sequence:
+            - if:
+                - condition: state
+                  entity_id: switch.qpmtwtuj_surplus_charging
+                  state: "off"
+              then:
+                - action: switch.turn_off
+                  target:
+                    entity_id: switch.unicron_charger_enabled
+                - action: notify.persistent_notification
+                  data:
+                    title: "EV Charging"
+                    message: "Night-rate window ended. Charger disabled."
+              else:
+                - action: notify.persistent_notification
+                  data:
+                    title: "EV Charging"
+                    message: "Night-rate window ended but surplus charging is active. Charger remains on."
+
+- id: ev_solar_surplus_charging
+  alias: "EV Solar Surplus Charging"
+  description: >
+    When solar export exceeds 1.4kW for 5 minutes, enable the charger and
+    turn on Easee built-in surplus charging mode. When export drops below
+    200W for 5 minutes, disable surplus charging.
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.qpmtwtuj_export_power
+      above: 1400
+      for:
+        minutes: 5
+      id: surplus_high
+    - trigger: numeric_state
+      entity_id: sensor.qpmtwtuj_export_power
+      below: 200
+      for:
+        minutes: 5
+      id: surplus_low
+  conditions:
+    - condition: time
+      after: "08:00:00"
+      before: "23:00:00"
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: surplus_high
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: switch.unicron_charger_enabled
+            - action: switch.turn_on
+              target:
+                entity_id: switch.qpmtwtuj_surplus_charging
+            - action: notify.persistent_notification
+              data:
+                title: "EV Solar Surplus"
+                message: "Solar surplus detected (>1.4kW for 5min). Surplus charging enabled."
+        - conditions:
+            - condition: trigger
+              id: surplus_low
+          sequence:
+            - action: switch.turn_off
+              target:
+                entity_id: switch.qpmtwtuj_surplus_charging
+            - action: switch.turn_off
+              target:
+                entity_id: switch.unicron_charger_enabled
+            - action: notify.persistent_notification
+              data:
+                title: "EV Solar Surplus"
+                message: "Solar surplus dropped. Surplus charging disabled."
+
+- id: immersion_solar_diversion
+  alias: "Immersion Solar Diversion"
+  description: >
+    Battery-aware immersion solar diversion. Two paths:
+    1. Battery SoC > 80% AND solar generation > 2kW: start immersion early
+       (battery nearly full, surplus is coming).
+    2. Grid export > 2kW (original logic): battery is full and exporting.
+    Turns off when solar drops below 1kW or battery drops below 50%.
+    Priority: runs 09:00-16:00, after EV surplus charging.
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.aidan_molloy_battery_soc
+      above: 80
+      id: battery_high
+    - trigger: numeric_state
+      entity_id: sensor.solar_surplus
+      above: 2000
+      for:
+        minutes: 3
+      id: export_high
+    - trigger: numeric_state
+      entity_id: sensor.aidan_molloy_current_solar_generation
+      below: 1
+      for:
+        minutes: 2
+      id: solar_low
+    - trigger: numeric_state
+      entity_id: sensor.aidan_molloy_battery_soc
+      below: 50
+      id: battery_low
+  conditions:
+    - condition: time
+      after: "09:00:00"
+      before: "16:00:00"
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: battery_high
+            - condition: numeric_state
+              entity_id: sensor.aidan_molloy_battery_soc
+              above: 80
+            - condition: numeric_state
+              entity_id: sensor.aidan_molloy_current_solar_generation
+              above: 2
+            - condition: state
+              entity_id: switch.water_heater_switch
+              state: "off"
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: switch.water_heater_switch
+            - action: notify.persistent_notification
+              data:
+                title: "Immersion Diversion"
+                message: "Battery >80% and solar >2kW. Immersion ON (early diversion)."
+        - conditions:
+            - condition: trigger
+              id: export_high
+            - condition: state
+              entity_id: switch.water_heater_switch
+              state: "off"
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: switch.water_heater_switch
+            - action: notify.persistent_notification
+              data:
+                title: "Immersion Diversion"
+                message: "Grid export >2kW. Immersion ON."
+        - conditions:
+            - condition: or
+              conditions:
+                - condition: trigger
+                  id: solar_low
+                - condition: trigger
+                  id: battery_low
+            - condition: state
+              entity_id: switch.water_heater_switch
+              state: "on"
+          sequence:
+            - action: switch.turn_off
+              target:
+                entity_id: switch.water_heater_switch
+            - action: notify.persistent_notification
+              data:
+                title: "Immersion Diversion"
+                message: "Solar/battery dropped. Immersion OFF."
+
+- id: immersion_night_rate_morning
+  alias: "Immersion Night-Rate Morning (05:00-07:00)"
+  description: >
+    Heat the hot water tank using cheap night-rate electricity instead of oil.
+    Replaces the 06:30 oil boiler run. Runs immersion from 05:00 to 07:00
+    so the tank is hot before morning usage.
+  mode: single
+  triggers:
+    - trigger: time
+      at: "05:00:00"
+      id: start
+    - trigger: time
+      at: "07:00:00"
+      id: stop
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: start
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: switch.water_heater_switch
+            - action: notify.persistent_notification
+              data:
+                title: "Immersion"
+                message: "Night-rate immersion ON (05:00-07:00)."
+        - conditions:
+            - condition: trigger
+              id: stop
+          sequence:
+            - action: switch.turn_off
+              target:
+                entity_id: switch.water_heater_switch
+            - action: notify.persistent_notification
+              data:
+                title: "Immersion"
+                message: "Night-rate immersion OFF. Tank should be hot."
+
+- id: tariff_band_switcher
+  alias: "Tariff Band Switcher"
+  description: >
+    Switches utility meter tariffs at rate change times.
+    Night: 23:00-08:00, Peak: 17:00-19:00, Day: 08:00-17:00 and 19:00-23:00.
+  mode: single
+  triggers:
+    - trigger: time
+      at: "08:00:00"
+      id: day_start
+    - trigger: time
+      at: "17:00:00"
+      id: peak_start
+    - trigger: time
+      at: "19:00:00"
+      id: day_resume
+    - trigger: time
+      at: "23:00:00"
+      id: night_start
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: night_start
+          sequence:
+            - action: select.select_option
+              target:
+                entity_id:
+                  - select.grid_import_daily
+                  - select.grid_cost_daily
+              data:
+                option: night
+        - conditions:
+            - condition: trigger
+              id: day_start
+          sequence:
+            - action: select.select_option
+              target:
+                entity_id:
+                  - select.grid_import_daily
+                  - select.grid_cost_daily
+              data:
+                option: day
+        - conditions:
+            - condition: trigger
+              id: peak_start
+          sequence:
+            - action: select.select_option
+              target:
+                entity_id:
+                  - select.grid_import_daily
+                  - select.grid_cost_daily
+              data:
+                option: peak
+        - conditions:
+            - condition: trigger
+              id: day_resume
+          sequence:
+            - action: select.select_option
+              target:
+                entity_id:
+                  - select.grid_import_daily
+                  - select.grid_cost_daily
+              data:
+                option: day
+
+- id: daily_energy_summary_gemini
+  alias: "Daily Energy Summary (Gemini)"
+  description: "Gemini analyses today's energy at 7pm and gives a tip"
+  trigger:
+    - platform: time
+      at: "19:00:00"
+  action:
+    - service: conversation.process
+      data:
+        agent_id: conversation.google_ai_conversation
+        text: >
+          Home energy summary for today, {{ now().strftime('%A %d %B') }}:
+          Solar generated {{ states('sensor.aidan_molloy_solar_generation_today') }} kWh.
+          Grid imported {{ states('sensor.aidan_molloy_grid_import_today') }} kWh
+          (cost: day €{{ states('sensor.grid_cost_daily_day') }}, night €{{ states('sensor.grid_cost_daily_night') }}, peak €{{ states('sensor.grid_cost_daily_peak') }}).
+          Grid exported {{ states('sensor.aidan_molloy_grid_export_today') }} kWh (earned €{{ states('sensor.export_earnings_daily') }}).
+          Battery SoC now: {{ states('sensor.battery_soc') }}%.
+          Tomorrow solar forecast: {{ states('sensor.energy_production_tomorrow') }} kWh.
+          EV charger session: {{ states('sensor.unicron_session_energy') }} kWh.
+          In one sentence under 200 characters, give the key energy insight and best tip for tonight or tomorrow.
+      response_variable: gemini_response
+    - service: input_text.set_value
+      data:
+        entity_id: input_text.gemini_summary
+        value: "{{ gemini_response.response.speech.plain.speech[:250] }}"
+
+- id: livoltek_auto_reload
+  alias: "Livoltek Auto Reload"
+  description: "Reload Livoltek integration when cloud sensors go unavailable for 5 minutes"
+  trigger:
+    - platform: state
+      entity_id: sensor.aidan_molloy_current_solar_generation
+      to: unavailable
+      for:
+        minutes: 5
+  action:
+    - action: homeassistant.reload_config_entry
+      data:
+        entry_id: YOUR_LIVOLTEK_ENTRY_ID
